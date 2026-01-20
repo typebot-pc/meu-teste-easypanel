@@ -21,7 +21,8 @@ texto = 'Testando app...'
 # O yield segura a execução até que o aplicativo termine
 async def lifespan(app: FastAPI):
     yield
-    print('Encerrando...')
+    await http_client.aclose()
+    print("Encerrando...")
 
 
 
@@ -51,8 +52,7 @@ async def send_message(remoteJid: str, text: str) -> None:
         "text": text
     }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=body, headers=headers)
+    response = await http_client.post(url, json=body, headers=headers)
 
     if response.status_code not in (200, 201):
         print(f"Falha ao enviar a mensagem para {remoteJid}: {response.status_code} - {response.text}")

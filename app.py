@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import pytz
 from datetime import datetime
+from typing import Optional
 
 
 
@@ -82,6 +83,53 @@ async def send_message(remoteJid: str, text: str) -> None:
 
 
 # =====================================
+# Integração
+# =====================================
+async def verificar_usuario(cpf: str) -> Optional[dict]:
+    url = "https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/verify-user"
+    headers = {"Content-Type": "application/json"}
+    payload = {"cpf": cpf}
+
+    try:
+        response = await http_client.post(url, json=payload, headers=headers)
+
+        if response.status_code != 200:
+            print("Erro ao verificar usuário:", response.text)
+            return None
+
+        return response.json()
+
+    except Exception as e:
+        print("Erro verify-user:", e)
+        return None
+
+
+
+async def chamar_assistant(cpf: str, phone: str, message: str):
+    url = "https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/external-assistant"
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "cpf": cpf,
+        "phone": phone,
+        "message": message,
+        "callback_url": "https://chatbot.monitoramento.qzz.io/enviarResposta"
+    }
+
+    try:
+        response = await http_client.post(url, json=payload, headers=headers)
+
+        if response.status_code not in (200, 201):
+            print("Erro ao chamar assistant:", response.text)
+
+    except Exception as e:
+        print("Erro external-assistant:", e)
+
+
+
+# =====================================
 # Endpoints
 # =====================================
 @app.get("/")
@@ -99,6 +147,26 @@ def health():
 @app.get("/teste")
 async def teste():
     await send_message(remoteJid, texto)
+
+
+
+@app.post("/enviarResposta")
+async def enviarResposta(request: Request):
+    data = await request.json()
+
+    cpf = data.get("cpf")
+    phone = data.get("phone")
+    response_text = data.get("response")
+
+    if not phone or not response_text:
+        return {"status": "invalid payload"}
+
+    remoteJid = f"{phone}@s.whatsapp.net"
+
+    await send_message(remoteJid, response_text)
+
+    return {"status": "ok"}
+
 
 
 
@@ -129,3 +197,34 @@ async def webhook(request: Request):
 
         periodo_do_dia = await obter_periodo_do_dia()
         await send_message(remoteJid, f'{periodo_do_dia}, {nome_usuario}!')
+
+        # ----------------------------------
+        cpf = message
+
+        usuario = await verificar_usuario(cpf)
+
+        if not usuario:
+            await send_message(remoteJid, "❌ Erro ao verificar seu cadastro.")
+            return await status_ok()
+
+        if not usuario.get("exists"):
+            await send_message(remoteJid, "❌ Você não possui cadastro.")
+            return await status_ok()
+
+        if not usuario.get("authorized"):
+            await send_message(remoteJid, "⛔ Seu acesso não está autorizado.")
+            return await status_ok()
+
+        if usuario.get("account-status") != "active":
+            await send_message(remoteJid, "⚠️ Sua conta não está ativa.")
+            return await status_ok()
+
+        # Tudo OK → chama assistant
+        await chamar_assistant(
+            cpf=cpf,
+            phone=phone_number,
+            message=message
+        )
+
+        # Feedback imediato (opcional)
+        await send_message(remoteJid, "⏳ Processando sua solicitação...")

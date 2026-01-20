@@ -12,12 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia o restante do projeto
 COPY . .
 
-HEALTHCHECK NONE
-
 # Expõe a porta (FastAPI)
 EXPOSE 5000
 
 # Comando para rodar a aplicação
 #CMD ["sh", "-c", "echo 'Container iniciado' && sleep infinity"]
-#CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000", "--log-level", "debug"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
+#CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000", "--log-level", "debug"]

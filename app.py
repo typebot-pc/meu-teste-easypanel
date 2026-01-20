@@ -1,11 +1,12 @@
-from fastapi import FastAPI
 import os
 import uvicorn
 import httpx
 from fastapi import FastAPI, Request
 
 
-#app = FastAPI()
+
+# app = FastAPI()
+
 
 
 # Evolution
@@ -58,14 +59,21 @@ async def send_message(remoteJid: str, text: str) -> None:
 
 
 
+# =====================================
+# Endpoints
+# =====================================
 @app.get("/")
 def root():
     return "OK"
 
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
-    
+
+
+
 @app.get("/teste")
 async def teste():
     await send_message(remoteJid, texto)

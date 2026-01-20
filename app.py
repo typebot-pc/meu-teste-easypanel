@@ -1,4 +1,5 @@
 import os
+import re
 import uvicorn
 import httpx
 from fastapi import FastAPI, Request
@@ -15,6 +16,10 @@ apikey = 'F9AB68BD21E5-4B2B-BFEA-0AE010D4E894'
 instance = 'chatbot'
 remoteJid = '554198498763@s.whatsapp.net'
 texto = 'Testando app...'
+
+
+
+lista_cadastrados = {}
 
 
 
@@ -72,7 +77,8 @@ async def send_message(remoteJid: str, text: str) -> None:
     }
     body = {
         "number": remoteJid,
-        "text": text
+        "text": text,
+        "linkPreview": False
     }
 
     response = await http_client.post(url, json=body, headers=headers)
@@ -85,18 +91,15 @@ async def send_message(remoteJid: str, text: str) -> None:
 # =====================================
 # Integração
 # =====================================
-async def verificar_usuario(cpf: str) -> Optional[dict]:
+async def verificar_usuario(dados: dict) -> Optional[dict]:
     url = "https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/verify-user"
     headers = {"Content-Type": "application/json"}
-    payload = {"cpf": cpf}
-
+    payload = dados
     try:
         response = await http_client.post(url, json=payload, headers=headers)
-
         if response.status_code != 200:
             print("Erro ao verificar usuário:", response.text)
             return None
-
         return response.json()
 
     except Exception as e:
@@ -110,22 +113,56 @@ async def chamar_assistant(cpf: str, phone: str, message: str):
     headers = {
         "Content-Type": "application/json"
     }
-
     payload = {
         "cpf": cpf,
         "phone": phone,
         "message": message,
         "callback_url": "https://chatbot.monitoramento.qzz.io/enviarResposta"
     }
-
     try:
         response = await http_client.post(url, json=payload, headers=headers)
-
         if response.status_code not in (200, 201):
             print("Erro ao chamar assistant:", response.text)
 
     except Exception as e:
         print("Erro external-assistant:", e)
+
+
+
+def extrair_dados(message: str, phone_number: str):
+    try:
+        # Se a mensagem contém as palavras-chave, mas não bate no padrão → tentativa inválida
+        if "USUARIO:" in message or "CODIGO:" in message:
+            padrao = re.compile(
+                r"USUARIO:\s*(\d{11})\s*"
+                r"CODIGO:\s*([0-9a-fA-F]{8}-"
+                r"[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{12})",
+                re.MULTILINE
+            )
+
+            match = padrao.search(message)
+            if not match:
+                return {"status": "invalid_format"}
+            cpf = match.group(1)
+            codigo = match.group(2)
+
+            return {
+                "status": "ok",
+                "dados": {
+                    "cpf": cpf,
+                    "codigo": codigo,
+                    "telefone": phone_number
+                }
+            }
+
+        # Mensagem comum, não é tentativa de cadastro
+        return None
+
+    except Exception:
+        return None
 
 
 
@@ -195,41 +232,83 @@ async def webhook(request: Request):
         message = data['data']['message'].get('conversation', '')
         print(f"{phone_number} - {messageType} - Mensagem: {message}")
 
-        periodo_do_dia = await obter_periodo_do_dia()
-        await send_message(remoteJid, f'{periodo_do_dia}, {nome_usuario}!')
+        # Pula a etapa de verificação se o usuário já possui o número cadastrado
+        if phone_number in lista_cadastrados:
+            await chamar_assistant(
+                cpf=lista_cadastrados[phone_number],
+                phone=phone_number,
+                message=message
+            )
+            return await status_ok()
 
-        # ----------------------------------
-        # cpf = message
-        #
-        # usuario = await verificar_usuario(cpf)
-        #
-        # if not usuario:
-        #     await send_message(remoteJid, "❌ Erro ao verificar seu cadastro.")
-        #     return await status_ok()
-        #
-        # if not usuario.get("exists"):
-        #     await send_message(remoteJid, "❌ Você não possui cadastro.")
-        #     return await status_ok()
-        #
-        # if not usuario.get("authorized"):
-        #     await send_message(remoteJid, "⛔ Seu acesso não está autorizado.")
-        #     return await status_ok()
-        #
-        # if usuario.get("account-status") != "active":
-        #     await send_message(remoteJid, "⚠️ Sua conta não está ativa.")
-        #     return await status_ok()
-        #
-        # # Tudo OK → chama assistant
-        # await chamar_assistant(
-        #     cpf=cpf,
-        #     phone=phone_number,
-        #     message=message
-        # )
-        await chamar_assistant(
-            cpf='07903292986',
-            phone=phone_number,
-            message=message
+        # Caso não tenha o número cadastrado, verifica a mensagem recebida
+        # Tenta extrair a mensagem padrão que virá pelo app
+        resultado = extrair_dados(message, phone_number)
+
+        # Caso a pessoa altere os dados da mensagem padrão (tentativa de fraude)
+        if isinstance(resultado, dict) and resultado.get("status") == "invalid_format":
+            await send_message(remoteJid,
+                "⚠️ Parece que a mensagem de confirmação foi alterada.\n\n"
+                "Por favor, volte ao app e gere um novo código de verificação.\n"
+                "https://road-cost-tracker.lovable.app/"
+            )
+            return await status_ok()
+
+        # Mensagem válida
+        if isinstance(resultado, dict) and resultado.get("status") == "ok":
+            dados_para_verificacao = resultado["dados"]
+            usuario = await verificar_usuario(dados_para_verificacao)
+            #usuario = {'exists': True, 'authorized': True, 'account_status': 'ativo', 'plan_type': 'trial', 'nome': 'Luis Gustavo Lopes da Silveira', 'user_id': 'ee5cc143-c2c4-4576-8b3b-341276d82535', 'message': 'Usuário autorizado'}
+            #usuario = {'exists': True, 'authorized': True, 'account_status': 'ativo', 'plan_type': 'trial', 'nome': 'Luis Gustavo Lopes da Silveira', 'user_id': 'ee5cc143-c2c4-4576-8b3b-341276d82535', 'message': 'Usuário autorizado', 'token': '6110a417-ef59-42f3-8d36-b8b8818338b7'}
+            #usuario["token"] = "6110a417-ef59-42f3-8d36-b8b8818338b7"
+
+            if not usuario:
+                await send_message(remoteJid, "❌ Erro ao verificar seu cadastro, tente novamente.")
+                return await status_ok()
+
+            if not usuario.get("exists"):
+                await send_message(remoteJid, "Que pena, não encontrei seu cadastro. 😕\n\nCadastre-se em:\nhttps://road-cost-tracker.lovable.app/")
+                return await status_ok()
+
+            if not usuario.get("authorized"):
+                await send_message(remoteJid, "⛔ Seu acesso não está autorizado.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
+                return await status_ok()
+
+            if usuario.get("account_status") != "ativo":
+                await send_message(remoteJid, "⚠️ Sua conta não está ativa.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
+                return await status_ok()
+
+            # if usuario.get("token") != dados_para_verificacao.get("codigo"):
+            #     await send_message(remoteJid, "⚠️ Código expirado.\n\nGere um novo pelo app:\nhttps://road-cost-tracker.lovable.app/")
+            #     return await status_ok()
+
+            lista_cadastrados[phone_number] = dados_para_verificacao["cpf"]
+            await send_message(remoteJid, "✅ Número cadastrado com sucesso")
+            await chamar_assistant(
+                cpf=dados_para_verificacao["cpf"],
+                phone=phone_number,
+                message="Me dê boas vindas"
+            )
+            return await status_ok()
+
+        # Mensagem comum (usuário ainda não cadastrado)
+        await send_message(remoteJid,
+            "Oi, eu sou seu assistente do Motbook! 🤖\n\n"
+            "Para conversar comigo, cadastre esse número no app:\n"
+            "https://road-cost-tracker.lovable.app/"
         )
 
-        # Feedback imediato (opcional)
-        await send_message(remoteJid, "⏳ Processando sua solicitação...")
+
+
+
+if __name__ == '__main__':
+    uvicorn.run(app, host='0.0.0.0', port=5000, log_level='warning')
+
+
+
+# Para iniciar através do terminal
+# No webhook da Evolution colocar a URL, por exemplo:
+# https://bitterbird9138.cotunnel.com/webhook
+
+# Retornar a webhook correta:
+# https://chatbot.monitoramento.qzz.io/webhook

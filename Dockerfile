@@ -16,4 +16,5 @@ COPY . .
 EXPOSE 5000
 
 # Comando para rodar a aplicação
-CMD ["sh", "-c", "echo 'Container iniciado' && sleep infinity"]
+#CMD ["sh", "-c", "echo 'Container iniciado' && sleep infinity"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]

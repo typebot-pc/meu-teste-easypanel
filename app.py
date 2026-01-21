@@ -81,7 +81,7 @@ async def obter_periodo_do_dia():
 # DATABASE
 # =====================================
 #DATABASE_URL = 'postgres://usuario:123456@easypanel.monitoramento.qzz.io:6000/db-truckdesk?sslmode=disable'
-DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable'
+DATABASE_URL = 'postgres://usuario:123456@127.0.0.1:5432/db-truckdesk'
 
 pool: Optional[asyncpg.Pool] = None
 
@@ -92,6 +92,19 @@ async def init_db():
         min_size=1,
         max_size=10
     )
+
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_users (
+                phone VARCHAR(20) PRIMARY KEY,
+                cpf VARCHAR(14) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'ativo',
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+
 
 async def get_user_by_phone(phone: str):
     async with pool.acquire() as conn:

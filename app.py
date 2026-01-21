@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 import pytz
 from datetime import datetime
 from typing import Optional
+import asyncpg
+
 
 
 
@@ -25,9 +27,18 @@ lista_cadastrados = {}
 
 # O yield segura a execução até que o aplicativo termine
 async def lifespan(app: FastAPI):
+    # STARTUP
+    await init_db()
+    print("PostgreSQL conectado")
+
     yield
     await http_client.aclose()
     print("Encerrando...")
+
+    # SHUTDOWN
+    if pool:
+        await pool.close()
+        print("PostgreSQL desconectado")
 
 
 
@@ -63,6 +74,63 @@ async def obter_periodo_do_dia():
         return "Boa tarde"
     else:
         return "Boa noite"
+
+
+
+# =====================================
+# DATABASE
+# =====================================
+#DATABASE_URL = 'postgres://usuario:123456@easypanel.monitoramento.qzz.io:6000/db-truckdesk?sslmode=disable'
+DATABASE_URL = 'postgres://usuario:123456@127.0.0.1:5432/db-truckdesk'
+
+pool: Optional[asyncpg.Pool] = None
+
+async def init_db():
+    global pool
+    pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=10
+    )
+
+async def get_user_by_phone(phone: str):
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT phone, cpf, status
+            FROM whatsapp_users
+            WHERE phone = $1
+            """,
+            phone
+        )
+
+async def upsert_whatsapp_user(phone: str, cpf: str):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO whatsapp_users (phone, cpf, status)
+            VALUES ($1, $2, 'ativo')
+            ON CONFLICT (phone)
+            DO UPDATE SET
+                cpf = EXCLUDED.cpf,
+                status = 'ativo',
+                updated_at = NOW()
+            """,
+            phone,
+            cpf
+        )
+
+async def update_user_status(phone: str, status: str):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE whatsapp_users
+            SET status = $2, updated_at = NOW()
+            WHERE phone = $1
+            """,
+            phone,
+            status
+        )
 
 
 
@@ -187,6 +255,16 @@ async def teste():
 
 
 
+@app.post("/lovable/user-status") #Lovable chama isso quando: plano vence / acesso é revogado / usuário é bloqueado
+async def lovable_user_status(payload: dict):
+    phone = payload["phone"]
+    status = payload["status"]  # ativo | inativo | vencido
+
+    await update_user_status(phone, status)
+    return {"ok": True}
+
+
+
 @app.post("/enviarResposta")
 async def enviarResposta(request: Request):
     data = await request.json()
@@ -232,14 +310,27 @@ async def webhook(request: Request):
         message = data['data']['message'].get('conversation', '')
         print(f"{phone_number} - {messageType} - Mensagem: {message}")
 
-        # Pula a etapa de verificação se o usuário já possui o número cadastrado
-        if phone_number in lista_cadastrados:
+        usuario_db = await get_user_by_phone(phone_number)
+        if usuario_db:
+            if usuario_db["status"] != "ativo":
+                await send_message(remoteJid,"⚠️ Sua conta não está ativa.\n\nRegularize No app:\nhttps://road-cost-tracker.lovable.app/")
+                return await status_ok()
+
             await chamar_assistant(
-                cpf=lista_cadastrados[phone_number],
+                cpf=usuario_db["cpf"],
                 phone=phone_number,
                 message=message
             )
             return await status_ok()
+
+        # Pula a etapa de verificação se o usuário já possui o número cadastrado
+        # if phone_number in lista_cadastrados:
+        #     await chamar_assistant(
+        #         cpf=lista_cadastrados[phone_number],
+        #         phone=phone_number,
+        #         message=message
+        #     )
+        #     return await status_ok()
 
         # Caso não tenha o número cadastrado, verifica a mensagem recebida
         # Tenta extrair a mensagem padrão que virá pelo app
@@ -278,11 +369,16 @@ async def webhook(request: Request):
                 await send_message(remoteJid, "⚠️ Sua conta não está ativa.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
                 return await status_ok()
 
-            # if usuario.get("token") != dados_para_verificacao.get("codigo"):
-            #     await send_message(remoteJid, "⚠️ Código expirado.\n\nGere um novo pelo app:\nhttps://road-cost-tracker.lovable.app/")
-            #     return await status_ok()
+            if usuario.get("token") != dados_para_verificacao.get("codigo"):
+                await send_message(remoteJid, "⚠️ Código expirado.\n\nGere um novo pelo app:\nhttps://road-cost-tracker.lovable.app/")
+                return await status_ok()
 
-            lista_cadastrados[phone_number] = dados_para_verificacao["cpf"]
+            #lista_cadastrados[phone_number] = dados_para_verificacao["cpf"]
+            await upsert_whatsapp_user(
+                phone=phone_number,
+                cpf=dados_para_verificacao["cpf"]
+            )
+
             await send_message(remoteJid, "✅ Número cadastrado com sucesso")
             await chamar_assistant(
                 cpf=dados_para_verificacao["cpf"],
@@ -306,9 +402,9 @@ if __name__ == '__main__':
 
 
 
-# Para iniciar através do terminal
 # No webhook da Evolution colocar a URL, por exemplo:
 # https://bitterbird9138.cotunnel.com/webhook
+# E rodar cotunnel no CMD do windows
 
 # Retornar a webhook correta:
 # https://chatbot.monitoramento.qzz.io/webhook

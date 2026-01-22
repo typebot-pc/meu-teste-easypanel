@@ -651,3 +651,27 @@ if __name__ == '__main__':
 
 # Retornar a webhook correta:
 # https://chatbot.monitoramento.qzz.io/webhook
+
+
+
+# requirements.txt
+# fastapi
+# uvicorn
+# httpx
+# pytz
+# asyncpg
+
+
+
+# GITHUB:
+# typebot-pc
+# truckdesk
+# main
+# /
+# 
+# NIXPACKS (Comando de início):
+# uvicorn app:app --host 0.0.0.0 --port $PORT
+# 
+# DOMÍNIOS:
+# chatbot.monitoramento.qzz.io
+# 5000

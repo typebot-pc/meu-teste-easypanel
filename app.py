@@ -1,12 +1,13 @@
 import re
-import uvicorn
 import httpx
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+import random
+import uvicorn
+import asyncpg
 import pytz
 from datetime import datetime
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, HTMLResponse
 from typing import Optional
-import asyncpg
 
 
 
@@ -51,7 +52,9 @@ http_client = httpx.AsyncClient(timeout=30)
 
 
 
+# =====================================
 # Função para retornar Status OK da solicitação
+# =====================================
 async def status_ok():
     return JSONResponse(content={"status": "OK"}, status_code=200)
 
@@ -61,10 +64,10 @@ async def status_ok():
 # =====================================
 # Database
 # =====================================
-#DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable' # URL de Conexão Interna
-DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable&options=-c%20timezone=America/Sao_Paulo'
+DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable&options=-c%20timezone=America/Sao_Paulo' # URL de Conexão Interna
 pool: Optional[asyncpg.Pool] = None
 
+# Função para criar as tabelas caso elas não existam
 async def init_db():
     global pool
     pool = await asyncpg.create_pool(
@@ -94,6 +97,8 @@ async def init_db():
             );
         """)
 
+
+# Função para buscar o usuário pelo número de telefone
 async def get_user_by_phone(phone: str):
     async with pool.acquire() as conn:
         return await conn.fetchrow(
@@ -105,6 +110,8 @@ async def get_user_by_phone(phone: str):
             phone
         )
 
+
+# Função para inserir o usuário na database local pelo número de telefone
 async def upsert_whatsapp_user(phone: str, cpf: str):
     async with pool.acquire() as conn:
         await conn.execute(
@@ -121,6 +128,8 @@ async def upsert_whatsapp_user(phone: str, cpf: str):
             cpf
         )
 
+
+# Função para atualizar o status do usuário - usada no endpoint POST atualizarUserStatus - para sinalizar vencimento, inativo, etc
 async def update_user_status(phone: str, status: str) -> bool:
     async with pool.acquire() as conn:
         result = await conn.execute(
@@ -134,6 +143,8 @@ async def update_user_status(phone: str, status: str) -> bool:
         )
     return result.endswith("1")
 
+
+# Função para deletar o usuário/telefone da database local - usada no endpoint POST atualizarUserStatus
 async def delete_user_by_phone(phone: str) -> bool:
     async with pool.acquire() as conn:
         result = await conn.execute(
@@ -145,6 +156,8 @@ async def delete_user_by_phone(phone: str) -> bool:
         )
     return result.endswith("1")
 
+
+# Função para registrar os eventos de inserção/delete da database local
 async def log_user_event(
     phone: str,
     action: str,
@@ -165,9 +178,11 @@ async def log_user_event(
 
 
 
+
 # =====================================
-# Evolution API
+# Evolution API v2
 # =====================================
+# Função para enviar mensagem
 async def send_message(remoteJid: str, text: str) -> None:
     url = f"{baseUrl}/message/sendText/{instance}"
     headers = {
@@ -181,10 +196,8 @@ async def send_message(remoteJid: str, text: str) -> None:
     }
 
     response = await http_client.post(url, json=body, headers=headers)
-
     if response.status_code not in (200, 201):
         print(f"Falha ao enviar a mensagem para {remoteJid}: {response.status_code} - {response.text}")
-
 
 
 # Função para retornar o base64 da mensagem na Evolution API v2
@@ -215,8 +228,9 @@ async def getBase64FromMediaMessage(remoteJid: str, messageID: str) -> None:
 
 
 
+
 # =====================================
-# Integração
+# Integração com os endpoints da Lovable
 # =====================================
 async def verificar_usuario(dados: dict) -> Optional[dict]:
     url = "https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/verify-user"
@@ -234,7 +248,7 @@ async def verificar_usuario(dados: dict) -> Optional[dict]:
         return None
 
 
-
+# Função para fazer a ponte entre o Whatsapp e o assistente do App
 async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = False):
     url = "https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/external-assistant"
     headers = {
@@ -247,7 +261,7 @@ async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = Fal
         "callback_url": "https://chatbot.monitoramento.qzz.io/enviarResposta"
     }
 
-    # Decide automaticamente que tipo de mensagem é
+    # Decide automaticamente que tipo de mensagem é (áudio ou texto)
     if audio:
         payload["audio_base64"] = message
         payload["mime_type"] = "audio/wav"
@@ -264,7 +278,35 @@ async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = Fal
 
 
 
-def extrair_dados(message: str, phone_number: str):
+
+# =====================================
+# Funções utilitárias
+# =====================================
+# Função para retornar o período do dia
+async def obter_periodo_do_dia():
+    # Define o fuso horário de Brasília
+    br_tz = pytz.timezone('America/Sao_Paulo')
+
+    # Obtém a hora atual
+    hora_atual = datetime.now(br_tz).hour
+
+    if 5 <= hora_atual < 12:
+        return "Bom dia"
+    elif 12 <= hora_atual < 18:
+        return "Boa tarde"
+    else:
+        return "Boa noite"
+
+
+# Função para extrair os dados da mensagem padrão de cadastro/login pelo Whatsapp
+'''
+USUARIO: 12345678901
+CODIGO: 6110a417-ef59-42f3-8d36-b8b8818338b7
+
+Para confirmar o cadastro deste número de celular, aperte para enviar essa mensagem. 
+O código é único e irá expirar em 5 minutos.
+'''
+def verificar_mensagem_cadastro(message: str, phone_number: str):
     try:
         # Se a mensagem contém as palavras-chave, mas não bate no padrão → tentativa inválida
         if "USUARIO:" in message or "CODIGO:" in message:
@@ -301,6 +343,7 @@ def extrair_dados(message: str, phone_number: str):
 
 
 
+
 # =====================================
 # Endpoints
 # =====================================
@@ -310,18 +353,23 @@ def root():
 
 
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
 
+
+# Endpoint para testar o envio das mensagens
 @app.get("/teste")
 async def teste():
     await send_message(remoteJid, 'Mensagem de teste')
 
 
 
+
+# [DEBUG] Endpoint para ver os usuários cadastrados na API
 @app.get("/whatsapp_users", response_class=HTMLResponse)
 async def debug_whatsapp_users():
     async with pool.acquire() as conn:
@@ -353,6 +401,7 @@ async def debug_whatsapp_users():
 
 
 
+# [DEBUG] Endpoint para ver os eventos registrados
 @app.get("/whatsapp_user_events", response_class=HTMLResponse)
 async def debug_whatsapp_user_events():
     async with pool.acquire() as conn:
@@ -390,7 +439,11 @@ async def debug_whatsapp_user_events():
 
 
 
-@app.post("/atualizarUserStatus") #Lovable chama isso quando: plano vence / acesso é revogado / usuário é bloqueado
+
+# Endpoint para atualizar os usuários na API
+# Lovable chama isso quando: plano vence / acesso é revogado / usuário é bloqueado
+# TODO = Ver com a Lovable quais são os status possíveis para deixar registrado aqui
+@app.post("/atualizarUserStatus")
 async def lovable_user_status(payload: dict):
     phone = payload.get("phone")
     action = payload.get("action")
@@ -434,6 +487,8 @@ async def lovable_user_status(payload: dict):
 
 
 
+
+# Endpoint do "callback_url" para a Lovable enviar a resposta do assistente
 @app.post("/enviarResposta")
 async def enviarResposta(request: Request):
     data = await request.json()
@@ -454,7 +509,7 @@ async def enviarResposta(request: Request):
 
 
 
-# Rota do webhook
+# Rota do webhook das mensagens recebidas
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
@@ -470,139 +525,123 @@ async def webhook(request: Request):
     messageID = data['data']['key']['id']
     nome_usuario = data['data']['pushName']
 
-    # ENCERRA SE FOR UM GRUPO
+
+    # RETORNA SE FOR UM GRUPO
     if "@g.us" in remoteJid:
         return await status_ok()
 
+    # [SE FOR UM TEXTO]
+    if messageType == 'conversation':
+        message = data['data']['message'].get('conversation', '')
+        print(f"{phone_number} - {messageType} - Mensagem: {message}")
+
     # [SE FOR UM ÁUDIO]
-    if messageType == 'audioMessage':
+    elif messageType == 'audioMessage':
         message = await getBase64FromMediaMessage(remoteJid, messageID)
         print(f"{phone_number} - {messageType} - Mensagem: {message}")
         if not message:
             await send_message(remoteJid, "Desculpe, houve um erro interno e não consegui ouvir seu áudio.\nTente novamente por favor.")
             return await status_ok()
 
-        # Verifica na database localhost se número existe e qual seu status
-        usuario_db = await get_user_by_phone(phone_number)
-        if usuario_db:
-            if usuario_db["status"] == "vencido":
-                await send_message(remoteJid, "⚠️ Sua assinatura venceu.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
-
-            if usuario_db["status"] == "ativo":
-                await chamar_assistant(
-                    cpf=usuario_db["cpf"],
-                    phone=phone_number,
-                    message=message,
-                    audio=True
-                )
-                return await status_ok()
-
-            else:
-                await send_message(remoteJid, "⚠️ Sua conta não está ativa.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
+    # [SE TIPO DE MENSAGEM NÃO LISTADA ACIMA]
+    else:
+        await send_message(remoteJid, "Entendo apenas áudios e textos. Por favor, tente novamente.")
+        return await status_ok()
 
 
-    # [SE FOR UM TEXTO]
-    elif messageType == 'conversation':
-        message = data['data']['message'].get('conversation', '')
-        print(f"{phone_number} - {messageType} - Mensagem: {message}")
-
-        # Verifica na database localhost se número existe e qual seu status
-        usuario_db = await get_user_by_phone(phone_number)
-        if usuario_db:
-            if usuario_db["status"] == "vencido":
-                await send_message(remoteJid,"⚠️ Sua assinatura venceu.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
-
-            if usuario_db["status"] == "ativo":
-                await chamar_assistant(
-                    cpf=usuario_db["cpf"],
-                    phone=phone_number,
-                    message=message
-                )
-                return await status_ok()
-
-            else:
-                await send_message(remoteJid,"⚠️ Sua conta não está ativa.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
-
-
-        # Caso não tenha o número cadastrado, verifica a mensagem recebida
-        # Tenta extrair a mensagem padrão que virá pelo app
-        resultado = extrair_dados(message, phone_number)
-
-        # Caso a pessoa altere os dados da mensagem padrão (tentativa de fraude)
-        if isinstance(resultado, dict) and resultado.get("status") == "invalid_format":
-            await send_message(remoteJid,
-                "⚠️ Parece que a mensagem de confirmação foi alterada.\n\n"
-                "Por favor, volte ao app e gere um novo código de verificação.\n"
-                "https://road-cost-tracker.lovable.app/"
-            )
+    # Verifica na database da API (localhost) se o número existe e qual seu status (ativo, vencido...)
+    usuario_db = await get_user_by_phone(phone_number)
+    if usuario_db:
+        if usuario_db["status"] == "vencido":
+            await send_message(remoteJid, "⚠️ Sua assinatura venceu.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
             return await status_ok()
 
-        # Mensagem válida
-        # TODO = Fazer com que haja um bloqueio caso tenham muitas solicitações erradas para não sobrecarregar o endpoint do Lovable
-        if isinstance(resultado, dict) and resultado.get("status") == "ok":
-            dados_para_verificacao = resultado["dados"]
-            usuario = await verificar_usuario(dados_para_verificacao)
-            #usuario = {'exists': True, 'authorized': True, 'account_status': 'ativo', 'plan_type': 'trial', 'nome': 'Luis Gustavo Lopes da Silveira', 'user_id': 'ee5cc143-c2c4-4576-8b3b-341276d82535', 'message': 'Usuário autorizado'}
-            #usuario = {'exists': True, 'authorized': True, 'account_status': 'ativo', 'plan_type': 'trial', 'nome': 'Luis Gustavo Lopes da Silveira', 'user_id': 'ee5cc143-c2c4-4576-8b3b-341276d82535', 'message': 'Usuário autorizado', 'token': '6110a417-ef59-42f3-8d36-b8b8818338b7'}
-            #usuario["token"] = "6110a417-ef59-42f3-8d36-b8b8818338b7"
-
-            if not usuario:
-                await send_message(remoteJid, "❌ Erro ao verificar seu cadastro, tente novamente.")
-                return await status_ok()
-
-            if not usuario.get("exists"):
-                await send_message(remoteJid, "Que pena, não encontrei seu cadastro. 😕\n\nCadastre-se em:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
-
-            if not usuario.get("authorized"):
-                await send_message(remoteJid, "⛔ Seu acesso não está autorizado.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
-
-            if usuario.get("account_status") != "ativo":
-                await send_message(remoteJid, "⚠️ Sua conta não está ativa.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
-                return await status_ok()
-
-            # if usuario.get("token") != dados_para_verificacao.get("codigo"):
-            #     await send_message(remoteJid, "⚠️ Código expirado.\n\nGere um novo pelo app:\nhttps://road-cost-tracker.lovable.app/")
-            #     return await status_ok()
-
-            # Caso esteja tudo certo na validação, irá cadastrar na database localhost
-            await upsert_whatsapp_user(
-                phone=phone_number,
-                cpf=dados_para_verificacao["cpf"]
-            )
-
-            # Feedback inicial
-            await send_message(remoteJid, "✅ Número cadastrado com sucesso")
+        if usuario_db["status"] == "ativo":
             await chamar_assistant(
-                cpf=dados_para_verificacao["cpf"],
+                cpf=usuario_db["cpf"],
                 phone=phone_number,
-                message="Me dê boas vindas"
+                message=message,
+                audio=True
             )
             return await status_ok()
 
+        else:
+            await send_message(remoteJid, "⚠️ Sua conta não está ativa.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
+            return await status_ok()
 
-        # Mensagem comum (usuário ainda não cadastrado)
+
+    # Caso não tenha o número cadastrado, verifica se a mensagem recebida é aleatória ou se é a mensagem padrão de cadastro
+    resultado = verificar_mensagem_cadastro(message, phone_number)
+
+    # Verificação anti fraude 1 - caso a pessoa altere os dados da mensagem padrão
+    if isinstance(resultado, dict) and resultado.get("status") == "invalid_format":
         await send_message(remoteJid,
-            "Oi, eu sou seu assistente do Motbook! 🤖\n\n"
-            "Para conversar comigo, cadastre esse número no app:\n"
+            "⚠️ Parece que a mensagem de confirmação foi alterada.\n\n"
+            "Por favor, volte ao app e gere um novo código de verificação.\n"
             "https://road-cost-tracker.lovable.app/"
         )
+        return await status_ok()
+
+    # Se for a mensagem válida de cadastro irá consultar a database da Lovable através do endpoint para ver se usuário existe através do CPF e, se existir, capturar o token temporário
+    # TODO = Fazer com que haja um bloqueio caso tenham muitas solicitações erradas para não sobrecarregar o endpoint do Lovable
+    if isinstance(resultado, dict) and resultado.get("status") == "ok":
+        dados_para_verificacao = resultado["dados"]
+        usuario = await verificar_usuario(dados_para_verificacao)
+        #usuario = {'exists': True, 'authorized': True, 'account_status': 'ativo', 'plan_type': 'trial', 'nome': 'Luis Gustavo Lopes da Silveira', 'user_id': 'ee5cc143-c2c4-4576-8b3b-341276d82535', 'message': 'Usuário autorizado'}
+        #usuario = {'exists': True, 'authorized': True, 'account_status': 'ativo', 'plan_type': 'trial', 'nome': 'Luis Gustavo Lopes da Silveira', 'user_id': 'ee5cc143-c2c4-4576-8b3b-341276d82535', 'message': 'Usuário autorizado', 'token': '6110a417-ef59-42f3-8d36-b8b8818338b7'}
+        #usuario["token"] = "6110a417-ef59-42f3-8d36-b8b8818338b7"
+
+        if not usuario:
+            await send_message(remoteJid, "❌ Erro ao verificar seu cadastro. Por favor, tente novamente.")
+            return await status_ok()
+
+        if not usuario.get("exists"):
+            await send_message(remoteJid, "Que pena, não encontrei seu cadastro. 😕\n\nCadastre-se em:\nhttps://road-cost-tracker.lovable.app/")
+            return await status_ok()
+
+        if not usuario.get("authorized"):
+            await send_message(remoteJid, "⛔ Seu acesso não está autorizado.\n\nPor favor, regularize no app:\nhttps://road-cost-tracker.lovable.app/")
+            return await status_ok()
+
+        if usuario.get("account_status") != "ativo":
+            await send_message(remoteJid, "⚠️ Sua conta não está ativa.\n\nPor favor, regularize no app:\nhttps://road-cost-tracker.lovable.app/")
+            return await status_ok()
+
+        # if usuario.get("token") != dados_para_verificacao.get("codigo"):
+        #     await send_message(remoteJid, "⚠️ Código expirado.\n\nPor favor, gere um novo token pelo app:\nhttps://road-cost-tracker.lovable.app/")
+        #     return await status_ok()
+
+        # Caso esteja tudo certo na validação, irá cadastrar na database da API (localhost)
+        await upsert_whatsapp_user(
+            phone=phone_number,
+            cpf=dados_para_verificacao["cpf"]
+        )
+
+        # Feedback inicial
+        await send_message(remoteJid, "✅ Número cadastrado com sucesso")
+        await chamar_assistant(
+            cpf=dados_para_verificacao["cpf"],
+            phone=phone_number,
+            message="Me dê boas vindas aqui no Whatsapp"
+        )
+        return await status_ok()
 
 
-    # [SE NÃO FOR NENHUMA LISTADA ACIMA]
-    else:
-        await send_message(remoteJid, "Entendo apenas áudios e textos, por favor, tente novamente.")
+    # Mensagem comum (usuário ainda não cadastrado)
+    periodo_do_dia = await obter_periodo_do_dia()
+    await send_message(remoteJid,
+        f"{periodo_do_dia}, eu sou seu assistente do Motbook! 🤖\n\n"
+        "Para conversar comigo, cadastre esse número no app:\n"
+        "https://road-cost-tracker.lovable.app/"
+    )
+    return await status_ok()
 
 
 
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=5000, log_level='warning')
+
 
 
 

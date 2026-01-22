@@ -1,4 +1,3 @@
-import os
 import re
 import uvicorn
 import httpx
@@ -11,16 +10,13 @@ import asyncpg
 
 
 
-# Evolution
+
+# Credenciais EvolutionAPI
 baseUrl = 'https://evolution.monitoramento.qzz.io'
 apikey = 'F9AB68BD21E5-4B2B-BFEA-0AE010D4E894'
 instance = 'chatbot'
 remoteJid = '554198498763@s.whatsapp.net'
-texto = 'Testando app...'
 
-
-
-lista_cadastrados = {}
 
 
 
@@ -29,20 +25,21 @@ async def lifespan(app: FastAPI):
     # STARTUP
     await init_db()
     print("PostgreSQL conectado")
-
     yield
-    await http_client.aclose()
-    print("Encerrando...")
 
     # SHUTDOWN
+    await http_client.aclose()
+    print("Encerrando...")
     if pool:
         await pool.close()
         print("PostgreSQL desconectado")
 
 
 
-# Usar o gerenciador de contexto "lifespan" para controlar a vida útil da aplicação
+
+# Usa o gerenciador de contexto "lifespan" para controlar a vida útil da aplicação
 app = FastAPI(lifespan=lifespan)
+
 
 
 
@@ -53,34 +50,19 @@ http_client = httpx.AsyncClient(timeout=30)
 
 
 
+
 # Função para retornar Status OK da solicitação
 async def status_ok():
     return JSONResponse(content={"status": "OK"}, status_code=200)
 
 
 
-# Função para retornar o período do dia
-async def obter_periodo_do_dia():
-    # Define o fuso horário de Brasília
-    br_tz = pytz.timezone('America/Sao_Paulo')
-
-    # Obtém a hora atual
-    hora_atual = datetime.now(br_tz).hour
-
-    if 5 <= hora_atual < 12:
-        return "Bom dia"
-    elif 12 <= hora_atual < 18:
-        return "Boa tarde"
-    else:
-        return "Boa noite"
-
-
 
 # =====================================
-# DATABASE
+# Database
 # =====================================
-#DATABASE_URL = 'postgres://usuario:123456@easypanel.monitoramento.qzz.io:6000/db-truckdesk?sslmode=disable'
-DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable'
+#DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable' # URL de Conexão Interna
+DATABASE_URL = 'postgres://usuario:123456@scripts_db-truckdesk:5432/db-truckdesk?sslmode=disable&options=-c%20timezone=America/Sao_Paulo'
 pool: Optional[asyncpg.Pool] = None
 
 async def init_db():
@@ -92,7 +74,6 @@ async def init_db():
     )
 
     async with pool.acquire() as conn:
-        await conn.execute("SET TIME ZONE 'America/Sao_Paulo';")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS whatsapp_users (
                 phone VARCHAR(20) PRIMARY KEY,
@@ -269,6 +250,7 @@ async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = Fal
     # Decide automaticamente que tipo de mensagem é
     if audio:
         payload["audio_base64"] = message
+        payload["mime_type"] = "audio/wav"
     else:
         payload["message"] = message
 
@@ -336,7 +318,7 @@ def health():
 
 @app.get("/teste")
 async def teste():
-    await send_message(remoteJid, texto)
+    await send_message(remoteJid, 'Mensagem de teste')
 
 
 

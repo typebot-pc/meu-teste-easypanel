@@ -313,6 +313,9 @@ Para confirmar o cadastro deste número de celular, aperte para enviar essa mens
 O código é único e irá expirar em 5 minutos.
 '''
 def verificar_mensagem_cadastro(message: str, phone_number: str):
+    # Função possui dois parâmetros opcionais:
+    # "generate_token": True
+    # "mark_used": "uuid-do-token-verificado"
     try:
         # Se a mensagem contém as palavras-chave, mas não bate no padrão → tentativa inválida
         if "USUARIO:" in message or "CODIGO:" in message:

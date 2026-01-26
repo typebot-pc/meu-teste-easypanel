@@ -1,9 +1,9 @@
 import re
 import httpx
-import random
 import uvicorn
 import asyncpg
 import pytz
+import asyncio
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -194,10 +194,26 @@ async def send_message(remoteJid: str, text: str) -> None:
         "text": text,
         "linkPreview": False
     }
-
     response = await http_client.post(url, json=body, headers=headers)
     if response.status_code not in (200, 201):
         print(f"Falha ao enviar a mensagem para {remoteJid}: {response.status_code} - {response.text}")
+
+
+# Função para enviar status "Digitando..."
+async def send_composing(remoteJid: str) -> None:
+    url = f"{baseUrl}/chat/sendPresence/{instance}"
+    headers = {
+        "apikey": apikey,
+        "Content-Type": "application/json"
+    }
+    body = {
+        "number": remoteJid,
+        "delay": 5000,
+        "presence": "composing"
+    }
+    response = await http_client.post(url, json=body, headers=headers)
+    if response.status_code not in (200, 201):
+        print(f"Falha ao enviar 'send_composing' {remoteJid}: {response.status_code} - {response.text}")
 
 
 # Função para retornar o base64 da mensagem na Evolution API v2
@@ -208,7 +224,6 @@ async def getBase64FromMediaMessage(remoteJid: str, messageID: str) -> None:
         "apikey": apikey,
         "Content-Type": "application/json"
     }
-
     # Body
     body = {
         "message": {"key": {"id": messageID}}
@@ -256,6 +271,13 @@ async def verificar_usuario(dados: dict) -> Optional[dict]:
 
 # Função para fazer a ponte entre o Whatsapp e o assistente do App
 async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = False):
+    # Chama a task que envia "Digitando..." e evita duplicá-la
+    remoteJid = f"{phone}@s.whatsapp.net"
+    if remoteJid not in composing_tasks:
+        task = asyncio.create_task(composing_loop(remoteJid))
+        composing_tasks[remoteJid] = task
+
+    # Endpoint Lovable
     url = "https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/external-assistant"
     headers = {
         "Content-Type": "application/json"
@@ -302,6 +324,20 @@ async def obter_periodo_do_dia():
         return "Boa tarde"
     else:
         return "Boa noite"
+
+
+# Função para manter o bot com o status "Digitando..." ao esperar uma resposta
+composing_tasks = {}
+async def composing_loop(remoteJid: str, timeout=40):
+    start = asyncio.get_event_loop().time()
+    try:
+        while True:
+            if asyncio.get_event_loop().time() - start > timeout:
+                break
+            await send_composing(remoteJid)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
 
 
 # Função para extrair os dados da mensagem padrão de cadastro/login pelo Whatsapp
@@ -512,8 +548,12 @@ async def enviarResposta(request: Request):
 
     remoteJid = f"{phone}@s.whatsapp.net"
 
-    await send_message(remoteJid, response_text)
+    # Cancela o "Digitando..."
+    task = composing_tasks.pop(remoteJid, None)
+    if task:
+        task.cancel()
 
+    await send_message(remoteJid, response_text)
     return {"status": "ok"}
 
 
@@ -569,6 +609,10 @@ async def webhook(request: Request):
             return await status_ok()
 
         if usuario_db["status"] == "ativo":
+            task = composing_tasks.pop(remoteJid, None)
+            if task:
+                task.cancel()
+
             await chamar_assistant(
                 cpf=usuario_db["cpf"],
                 phone=phone_number,
@@ -658,11 +702,11 @@ if __name__ == '__main__':
 
 
 
-# No webhook da Evolution colocar a URL, por exemplo:
+# Para testes locais: no webhook da Evolution colocar a URL, por exemplo:
 # https://bitterbird9138.cotunnel.com/webhook
 # E rodar cotunnel no CMD do windows
 
-# Retornar a webhook correta:
+# Retornar a webhook correta em produção:
 # https://chatbot.monitoramento.qzz.io/webhook
 
 

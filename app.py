@@ -208,10 +208,11 @@ async def send_composing(remoteJid: str) -> None:
     }
     body = {
         "number": remoteJid,
-        "delay": 6000,
+        "delay": 40000,
         "presence": "composing"
     }
     response = await http_client.post(url, json=body, headers=headers)
+    await send_message(remoteJid, '[DEBUG] send_composing')
     if response.status_code not in (200, 201):
         print(f"Falha ao enviar 'send_composing' {remoteJid}: {response.status_code} - {response.text}")
 
@@ -338,7 +339,7 @@ async def composing_loop(remoteJid: str, timeout=40):
             if asyncio.get_event_loop().time() - start > timeout:
                 break
             await send_composing(remoteJid)
-            await asyncio.sleep(2)
+            await asyncio.sleep(4)
     except asyncio.CancelledError:
         pass
 

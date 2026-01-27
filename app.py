@@ -271,7 +271,7 @@ async def verificar_usuario(dados: dict) -> Optional[dict]:
 
 
 # Função para fazer a ponte entre o Whatsapp e o assistente do App
-async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = False):
+async def chamar_assistant(cpf: str, phone: str, message: str, payloadMessageType: str = 'text'):
     # Chama a task que envia "Digitando..." e evita duplicá-la
     remoteJid = f"{phone}@s.whatsapp.net"
     task = composing_tasks.pop(remoteJid, None)
@@ -293,10 +293,13 @@ async def chamar_assistant(cpf: str, phone: str, message: str, audio: bool = Fal
         "callback_url": "https://chatbot.monitoramento.qzz.io/enviarResposta"
     }
 
-    # Decide automaticamente que tipo de mensagem é (áudio ou texto)
-    if audio:
+    # Decide automaticamente que tipo de mensagem é (texto, áudio ou imagem)
+    if payloadMessageType == 'audio':
         payload["audio_base64"] = message
         payload["mime_type"] = "audio/wav"
+    elif payloadMessageType == 'image':
+        payload["image_base64"] = message
+        payload["mime_type"] = "image/jpeg"
     else:
         payload["message"] = message
 
@@ -553,7 +556,7 @@ async def enviarResposta(request: Request):
     remoteJid = f"{phone}@s.whatsapp.net"
 
     # Cancela o "Digitando..."
-    await send_composing(remoteJid, delay_ms=0, presence='unavailable')
+    await send_composing(remoteJid, delay_ms=0, presence='pause')
     task = composing_tasks.pop(remoteJid, None)
     if task:
         task.cancel()
@@ -579,7 +582,7 @@ async def webhook(request: Request):
     messageType = data['data']['messageType']
     messageID = data['data']['key']['id']
     nome_usuario = data['data']['pushName']
-    is_audio = False
+    payloadMessageType = 'text'
 
 
     # RETORNA SE FOR UM GRUPO
@@ -593,16 +596,25 @@ async def webhook(request: Request):
 
     # [SE FOR UM ÁUDIO]
     elif messageType == 'audioMessage':
-        is_audio = True
+        payloadMessageType = 'audio'
         message = await getBase64FromMediaMessage(remoteJid, messageID)
         print(f"{phone_number} - {messageType} - Mensagem: {message}")
         if not message:
             await send_message(remoteJid, "Desculpe, houve um erro interno e não consegui ouvir seu áudio.\nPode enviar como texto ou gravar novamente?")
             return await status_ok()
 
+    # [SE FOR UMA IMAGEM]
+    elif messageType == 'imageMessage':
+        payloadMessageType = 'image'
+        message = await getBase64FromMediaMessage(remoteJid, messageID)
+        print(f"{phone_number} - {messageType} - Mensagem: {message}")
+        if not message:
+            await send_message(remoteJid, "Desculpe, houve um erro interno e não consegui analisar a imagem.\nPode enviar como texto ou enviá-la novamente?")
+            return await status_ok()
+
     # [SE TIPO DE MENSAGEM NÃO LISTADA ACIMA]
     else:
-        await send_message(remoteJid, "Entendo apenas áudios e textos. Por favor, tente novamente.")
+        await send_message(remoteJid, "Entendo apenas áudios, textos e imagens. Por favor, tente novamente.")
         return await status_ok()
 
 
@@ -618,7 +630,7 @@ async def webhook(request: Request):
                 cpf=usuario_db["cpf"],
                 phone=phone_number,
                 message=message,
-                audio=is_audio
+                payloadMessageType=payloadMessageType
             )
             return await status_ok()
 

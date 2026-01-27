@@ -454,6 +454,7 @@ async def debug_whatsapp_users():
 
 
 
+
 # [DEBUG] Endpoint para ver os eventos registrados
 @app.get("/whatsapp_user_events", response_class=HTMLResponse)
 async def debug_whatsapp_user_events():
@@ -537,6 +538,26 @@ async def lovable_user_status(payload: dict):
     else:
         await log_user_event(phone, "error")
         raise HTTPException(400, "action inválida")
+
+
+
+
+# Endpoint para a Lovable enviar mensagens
+@app.post("/enviarMensagem")
+async def enviarMensagem(request: Request):
+    data = await request.json()
+
+    cpf = data.get("cpf")
+    phone = data.get("phone")
+    response_text = data.get("response")
+
+    if not phone or not response_text:
+        return {"status": "invalid payload"}
+
+    remoteJid = f"{phone}@s.whatsapp.net"
+
+    await send_message(remoteJid, response_text)
+    return {"status": "ok"}
 
 
 

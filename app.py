@@ -333,6 +333,19 @@ async def obter_periodo_do_dia():
         return "Boa noite"
 
 
+# Função para normalizar o número de telefone com o 9 na frente
+def normalize_phone(phone: str) -> str:
+    # Remove qualquer coisa que não seja número (extra seguro)
+    phone = ''.join(filter(str.isdigit, phone))
+
+    # Exemplo esperado sem 9: 5541XXXXXXXX (12 dígitos)
+    # Com 9:               55419XXXXXXXX (13 dígitos)
+    if len(phone) == 12 and phone.startswith("55"):
+        return phone[:4] + "9" + phone[4:]
+
+    return phone
+
+
 # Função para manter o bot com o status "Digitando..." ao esperar uma resposta
 composing_tasks = {}
 async def composing_loop(remoteJid: str, timeout=40):
@@ -418,6 +431,53 @@ def health():
 @app.get("/teste")
 async def teste():
     await send_message('554198498763@s.whatsapp.net', 'Mensagem de teste')
+
+
+
+
+# Endpoint para corrigir número sem o 9º digito na frente
+@app.post("/corrigir_numeros")
+async def corrigir_numeros():
+    corrigidos = 0
+
+    async with pool.acquire() as conn:
+        users = await conn.fetch("""
+            SELECT phone
+            FROM whatsapp_users
+        """)
+
+        for user in users:
+            phone = user["phone"]
+
+            # Só corrige números brasileiros sem o 9º dígito
+            # Ex: 554198623213 -> 5541998623213
+            if (
+                phone.startswith("55")
+                and len(phone) == 12
+            ):
+                ddd = phone[2:4]
+                numero = phone[4:]
+
+                novo_phone = f"55{ddd}9{numero}"
+
+                # Atualiza preservando PK
+                await conn.execute(
+                    """
+                    UPDATE whatsapp_users
+                    SET phone = $2,
+                        updated_at = NOW()
+                    WHERE phone = $1
+                    """,
+                    phone,
+                    novo_phone
+                )
+
+                corrigidos += 1
+
+    return {
+        "ok": True,
+        "corrigidos": corrigidos
+    }
 
 
 
@@ -600,6 +660,7 @@ async def webhook(request: Request):
     # Variáveis
     remoteJid = data['data']['key']['remoteJid']
     phone_number = remoteJid.split('@')[0]
+    phone_number = normalize_phone(phone_number)
     messageType = data['data']['messageType']
     messageID = data['data']['key']['id']
     nome_usuario = data['data']['pushName']
@@ -646,7 +707,7 @@ async def webhook(request: Request):
             await send_message(remoteJid, "⚠️ Sua assinatura venceu.\n\nRegularize no app:\nhttps://road-cost-tracker.lovable.app/")
             return await status_ok()
 
-        if usuario_db["status"] == "ativo":
+        elif usuario_db["status"] == "ativo":
             await chamar_assistant(
                 cpf=usuario_db["cpf"],
                 phone=phone_number,
@@ -745,8 +806,10 @@ if __name__ == '__main__':
 
 
 
-# Endpoint de lembretes
-#https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/whatsapp-daily-reminders
+# Endpoints
+# https://chatbot.monitoramento.qzz.io/whatsapp_users
+# https://chatbot.monitoramento.qzz.io/whatsapp_user_events
+# https://xghkaptoxkjdypiruinm.supabase.co/functions/v1/whatsapp-daily-reminders
 
 
 
